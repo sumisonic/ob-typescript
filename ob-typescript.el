@@ -41,8 +41,11 @@
 
 (add-to-list 'org-babel-tangle-lang-exts '("typescript" . "ts"))
 
-(defvar org-babel-typescript-tsconfig-path nil
-  "Path to the tsconfig.json file used for TypeScript compilation.")
+(defcustom org-babel-typescript-project-root nil
+  "Root directory of the TypeScript project for org-babel."
+  :type 'string
+  :group 'org-babel
+  :safe 'stringp)
 
 ;; optionally declare default header arguments for this language
 (defvar org-babel-default-header-args:typescript '((:cmdline . "--noImplicitAny")))
@@ -70,34 +73,38 @@ specifying a var of the same value."
     (string-to-number (match-string 0 ver-str))))
 
 (defun org-babel-execute:typescript (body params)
-  "Execute a block of Typescript code with org-babel. This function is
-called by `org-babel-execute-src-block'"
-  (let* ((project-root (if org-babel-typescript-tsconfig-path
-                           (file-name-directory org-babel-typescript-tsconfig-path)
-                         ""))
-         (tmp-src-file (org-babel-temp-file "ts-src-" ".ts"))
+  "Execute a block of Typescript code with org-babel. This function is called by `org-babel-execute-src-block`."
+  (unless org-babel-typescript-project-root
+    (error "The variable `org-babel-typescript-project-root` is not set. Please set it to the root directory of your TypeScript project."))
+  (let* ((project-root org-babel-typescript-project-root)
+         (src-dir (concat project-root "/src"))
          (output-dir (concat project-root "/dist"))
-         (src-file-path (concat project-root "/src/" (file-name-nondirectory tmp-src-file)))
+         (tmp-src-file (org-babel-temp-file "ts-src-" ".ts"))
+         (src-file (concat src-dir "/" (file-name-nondirectory tmp-src-file)))
          (tmp-out-file (concat output-dir "/" (file-name-nondirectory (file-name-sans-extension tmp-src-file)) ".js"))
          (cmdline (cdr (assoc :cmdline params)))
          (cmdline (if cmdline (concat " " cmdline) ""))
-         (tsconfig-arg (if org-babel-typescript-tsconfig-path
-                           (format "--project %s" org-babel-typescript-tsconfig-path)
-                         ""))
-         (jsexec (if (assoc :wrap params) ""
-                   (concat " && node " (org-babel-process-file-name tmp-out-file))))
-         (results (progn
-                    ;; Ensure the output directory exists
-                    (make-directory output-dir t)
-                    ;; Ensure the src directory exists
-                    (make-directory (concat project-root "/src") t)
-                    ;; Copy the temp source file to the src directory
-                    (copy-file tmp-src-file src-file-path t)
-                    ;; Compile the TypeScript code using tsc with the project configuration
-                    (org-babel-eval (format "cd %s && %s %s" project-root org-babel-command:typescript tsconfig-arg) "")
-                    ;; Execute the compiled JavaScript file
-                    (org-babel-eval (format "node %s" tmp-out-file) ""))))
-    results))
+         (compile-command (format "cd %s && npx tsc --project tsconfig.json" project-root))
+         (node-command (format "node %s" tmp-out-file))
+         compile-output
+         node-output)
+    (make-directory src-dir t)
+    (make-directory output-dir t)
+    (with-temp-file tmp-src-file
+      (insert (org-babel-expand-body:generic body params (org-babel-variable-assignments:typescript params))))
+    (copy-file tmp-src-file src-file t)
+    (unwind-protect
+        (progn
+          (setq compile-output (org-babel-eval compile-command ""))
+          (if (not (file-exists-p tmp-out-file))
+              (error "Compilation failed, JavaScript file not found: %s" tmp-out-file)
+            (setq node-output (org-babel-eval node-command ""))
+            (if (string-match "error" compile-output)
+                (error "Compilation error: %s" compile-output)
+              (if (string-match "error" node-output)
+                  (error "Execution error: %s" node-output)
+                node-output))))
+      (delete-file src-file))))
 
 (provide 'ob-typescript)
 
