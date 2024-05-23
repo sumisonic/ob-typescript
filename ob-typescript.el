@@ -41,6 +41,9 @@
 
 (add-to-list 'org-babel-tangle-lang-exts '("typescript" . "ts"))
 
+(defvar org-babel-typescript-tsconfig-path nil
+  "Path to the tsconfig.json file used for TypeScript compilation.")
+
 ;; optionally declare default header arguments for this language
 (defvar org-babel-default-header-args:typescript '((:cmdline . "--noImplicitAny")))
 
@@ -69,31 +72,32 @@ specifying a var of the same value."
 (defun org-babel-execute:typescript (body params)
   "Execute a block of Typescript code with org-babel. This function is
 called by `org-babel-execute-src-block'"
-  (let* ((tmp-src-file (org-babel-temp-file "ts-src-" ".ts"))
-         (tmp-out-file (org-babel-temp-file "ts-src-" ".js"))
+  (let* ((project-root (if org-babel-typescript-tsconfig-path
+                           (file-name-directory org-babel-typescript-tsconfig-path)
+                         ""))
+         (tmp-src-file (org-babel-temp-file "ts-src-" ".ts"))
+         (output-dir (concat project-root "/dist"))
+         (src-file-path (concat project-root "/src/" (file-name-nondirectory tmp-src-file)))
+         (tmp-out-file (concat output-dir "/" (file-name-nondirectory (file-name-sans-extension tmp-src-file)) ".js"))
          (cmdline (cdr (assoc :cmdline params)))
          (cmdline (if cmdline (concat " " cmdline) ""))
-         ;; since tsc v5, -out parameter is deprecated.
-         (out-file-param-name (if (>= (get-tsc-version) 5) "-outFile" "-out"))
+         (tsconfig-arg (if org-babel-typescript-tsconfig-path
+                           (format "--project %s" org-babel-typescript-tsconfig-path)
+                         ""))
          (jsexec (if (assoc :wrap params) ""
-                   (concat " ; node " (org-babel-process-file-name tmp-out-file))
-                   )))
-    (with-temp-file tmp-src-file (insert (org-babel-expand-body:generic
-                                          body params (org-babel-variable-assignments:typescript params))))
-    (let ((results (org-babel-eval (format "%s %s %s %s %s %s"
-                                           org-babel-command:typescript
-                                           cmdline
-                                           out-file-param-name
-                                           (org-babel-process-file-name tmp-out-file)
-                                           (org-babel-process-file-name tmp-src-file)
-                                           jsexec)
-                                   ""))
-          (jstrans (with-temp-buffer
-                     (insert-file-contents tmp-out-file)
-                     (buffer-substring-no-properties (point-min) (point-max))
-                     )))
-      (if (eq jsexec "") jstrans results)
-      )))
+                   (concat " && node " (org-babel-process-file-name tmp-out-file))))
+         (results (progn
+                    ;; Ensure the output directory exists
+                    (make-directory output-dir t)
+                    ;; Ensure the src directory exists
+                    (make-directory (concat project-root "/src") t)
+                    ;; Copy the temp source file to the src directory
+                    (copy-file tmp-src-file src-file-path t)
+                    ;; Compile the TypeScript code using tsc with the project configuration
+                    (org-babel-eval (format "cd %s && %s %s" project-root org-babel-command:typescript tsconfig-arg) "")
+                    ;; Execute the compiled JavaScript file
+                    (org-babel-eval (format "node %s" tmp-out-file) ""))))
+    results))
 
 (provide 'ob-typescript)
 
